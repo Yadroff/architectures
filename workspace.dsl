@@ -3,13 +3,16 @@ workspace "Cloud" "Приложение облачного хранилища" {
 
     model {
         user = person "Пользователь" "Пользователь облачного хранилища"
+
         userSystem = softwareSystem "Система пользователей" {
             description "Отвечает за управление пользователями и их данными"
+
             userDb = container "База данных пользователей"{
                 description "Хранит данные пользователей"
                 technology "PostgreSQL"
                 tags "Database"
             }
+
             userService = container "Сервис пользователей" {
                 description "Обрабатывает запросы, связанные с пользователями" 
                 technology "C++, Userver"
@@ -20,16 +23,13 @@ workspace "Cloud" "Приложение облачного хранилища" {
         storageSystem = softwareSystem "Система хранения" {
             description "Отвечает за хранение и управление файлами"
 
-            encryptionService = container "Сервис шифрования"{
-                description "Шифрует и дешифрует файлы." 
-                technology "C++, Userver, OpenSSL"
-            } 
             storageDb = container "База данных хранения" {
                 description "Хранит метаинформацию о файлах" 
                 technology "PostgreSQL"
                 tags "Database"
             }
-            fileStorage = container "Хранилище файлов" {
+
+            fileDb = container "Хранилище файлов" {
                 description "Хранит зашифрованные файлы" 
                 technology "Amazon S3"
                 tags "Database"
@@ -38,9 +38,25 @@ workspace "Cloud" "Приложение облачного хранилища" {
             fileSystemService = container "Сервис файловой системы" {
                 description "Управляет метаинформацией о файлах и взаимодействует с S3" 
                 technology "C++, Userver"
-                -> encryptionService "Шифрует/дешифрует файлы"
                 -> storageDb "Читает/записывает метаинформацию"
-                -> fileStorage "Читает/записывает файлы"
+                -> fileDb "Читает/записывает файлы"
+            }
+        }
+
+        encryptionSystem = softwareSystem "Сервис шифрования"{
+            description "Отвечает за шифровку/расшифровку файлов и хранение ключей шифрования пользователя"
+
+            keyDb = container "Хранилище ключей" {
+                description "Хранит симметричные ключи пользователей"
+                technology "PostgreSQL"
+                tags "Database"
+            }
+
+            encryptionService = container "Сервис шифрования" {
+                description "Шифрует и дешифрует файлы." 
+                technology "C++, Userver, OpenSSL"
+
+                -> keyDb "Получает ключи пользователя"
             }
         }
 
@@ -50,21 +66,25 @@ workspace "Cloud" "Приложение облачного хранилища" {
         user -> userSystem.userService "Редактирует данные своего аккаунта"
         user -> storageSystem.fileSystemService "Использует для хранения файлов"
 
+        storageSystem -> encryptionSystem "Использует для шифрования/дешифрования файлов"
+        storageSystem.fileSystemService -> encryptionSystem.encryptionService "Использует для шифрования/дешифрования файлов"
+
         prod = deploymentEnvironment "PROD" {
             deploymentNode "Userver" "Сервисы Userver" {
                 deploymentNode "K8S" "Kubernetes Cluster" {
                     containerInstance userSystem.userService
-                    containerInstance storageSystem.encryptionService
+                    containerInstance encryptionSystem.encryptionService
                     containerInstance storageSystem.fileSystemService
                 }
 
                 deploymentNode "RDS" "Relational Database Service" {
                     containerInstance userSystem.userDb
                     containerInstance storageSystem.storageDb
+                    containerInstance encryptionSystem.keyDb
                 }
 
                 deploymentNode "S3" "Simple Storage Service" {
-                    containerInstance storageSystem.fileStorage
+                    containerInstance storageSystem.fileDb
                 }
             }
         }
@@ -78,28 +98,38 @@ workspace "Cloud" "Приложение облачного хранилища" {
         }
 
         systemContext userSystem "SystemContext" "Диаграмма контекста системы" {
-            include user userSystem storageSystem
             autoLayout
+            include user userSystem storageSystem encryptionSystem
         }
 
         container userSystem "UserSystemContainerDiagram" "Диаграмма контейнеров системы пользователей" {
-            include user userSystem userSystem.userService userSystem.userDb
             autoLayout
+            include user userSystem userSystem.userService userSystem.userDb
         }
 
         container storageSystem "StorageSystemContainerDiagram" "Диаграмма контейнеров системы хранения" {
-            include storageSystem storageSystem.encryptionService storageSystem.storageDb storageSystem.fileStorage storageSystem.fileSystemService
             autoLayout
+            include storageSystem storageSystem.storageDb storageSystem.fileDb storageSystem.fileSystemService
+        }
+
+        container encryptionSystem "EncryptionSystemContainerDiagram" "Диаграмма контейнеров системы шифрования" {
+            autoLayout
+            include encryptionSystem encryptionSystem.encryptionService encryptionSystem.keyDb
         }
 
         deployment userSystem "PROD" "UserSystemProdDeployment" {
-            include *
             autoLayout
+            include *
         }
 
         deployment storageSystem "PROD" "StorageSystemProdDeployment" {
-            include *
             autoLayout
+            include *
+        }
+
+        deployment encryptionSystem "PROD" "EncryptionSystemProdDeployment" {
+            autoLayout
+            include *
         }
 
         dynamic userSystem "UseCase01" "Добавление нового пользователя" {
@@ -136,21 +166,23 @@ workspace "Cloud" "Приложение облачного хранилища" {
             autoLayout
             user -> storageSystem.fileSystemService "Сохранить файл (POST)"
             storageSystem.fileSystemService -> storageSystem.storageDb "Сохранить метаинформацию о файле"
-            storageSystem.fileSystemService -> storageSystem.fileStorage "Сохранить файл"   
+            storageSystem.fileSystemService -> encryptionSystem.encryptionService "Зашифровать файл"
+            storageSystem.fileSystemService -> storageSystem.fileDb "Сохранить файл"   
         }
 
         dynamic storageSystem "UseCase07" "Поиск файла по имени" {
             autoLayout
             user -> storageSystem.fileSystemService "Поиск файла по имени (GET)"
             storageSystem.fileSystemService -> storageSystem.storageDb "Получить метаинформацию о файле"
-            storageSystem.fileSystemService -> storageSystem.fileStorage "Получить файл"
+            storageSystem.fileSystemService -> storageSystem.fileDb "Получить файл"
+            storageSystem.fileSystemService -> encryptionSystem.encryptionService "Расшифровать файл"
         }
 
         dynamic storageSystem "UseCase08" "Удаление файла" {
             autoLayout
             user -> storageSystem.fileSystemService "Удалить файл (POST)"
             storageSystem.fileSystemService -> storageSystem.storageDb "Получить метаинформацию о файле"
-            storageSystem.fileSystemService -> storageSystem.fileStorage "Удалить файл"
+            storageSystem.fileSystemService -> storageSystem.fileDb "Удалить файл"
             storageSystem.fileSystemService -> storageSystem.storageDb "Удалить метаинформацию файла"
         }
 
@@ -158,7 +190,7 @@ workspace "Cloud" "Приложение облачного хранилища" {
             autoLayout
             user -> storageSystem.fileSystemService "Удалить папку (POST)"
             storageSystem.fileSystemService -> storageSystem.storageDb "Получить список файлов в папке"
-            storageSystem.fileSystemService -> storageSystem.fileStorage "Удалить файлы"
+            storageSystem.fileSystemService -> storageSystem.fileDb "Удалить файлы"
             storageSystem.fileSystemService -> storageSystem.storageDb "Удалить файлы и подпапки"
         }
 
