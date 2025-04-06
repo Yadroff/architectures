@@ -1,0 +1,3 @@
+[submodule "services/authproxy"]
+	path = services/authproxy
+	url = https://github.com/Yadroff/mai_architecture_authproxy
